@@ -19,7 +19,7 @@
 #
 #    Program Name:      classify.webbies.py
 #    Purpose:           Enumerate and screenshot web services
-#    Version:           1.0
+#    Version:           2.0
 #    Code Repo:         http://code.google.com/p/sunera-ap-team/
 
 import sys,re,httplib,socket,signal,argparse,time,os
@@ -27,6 +27,13 @@ from netaddr import IPNetwork,IPAddress
 from random import choice
 from threading import *
 
+#debug
+import cPickle as pickle
+import copy
+
+#anaylze
+from difflib import SequenceMatcher
+import pygraphviz as PG
 # original screenshot class written by plumo:
 # http://webscraping.com/blog/Webpage-screenshots-with-webkit/
 # thanks plumo
@@ -38,6 +45,7 @@ class Browser(QWebPage):
 	def __init__(self,useragents):
 		QWebPage.__init__(self)
 		self.useragent = choice(useragents)
+		self.settings().setAttribute(QWebSettings.JavascriptEnabled,False)
 	def userAgentForUrl(self,url):
 		return self.useragent
 
@@ -47,7 +55,6 @@ class Screenshot(QWebView):
         QWebView.__init__(self)
         self._loaded = False
         self.loadFinished.connect(self._loadFinished)
-	self.settings().setAttribute(QWebSettings.JavascriptEnabled,False)
 	self.setPage(Browser(useragents))
 
     def capture(self, url, output_file):
@@ -55,15 +62,18 @@ class Screenshot(QWebView):
         self.wait_load()
         # set to webpage size
         frame = self.page().mainFrame()
-        self.page().setViewportSize(frame.contentsSize())
-        # render image
-        image = QImage(self.page().viewportSize(), QImage.Format_ARGB32)
-        painter = QPainter(image)
-        frame.render(painter)
-        painter.end()
+	if frame.contentsSize().isNull():
+		self.page().setViewportSize(QSize(100,100))
+	else:
+		self.page().setViewportSize(frame.contentsSize())
+
+	image = QImage(self.page().viewportSize(), QImage.Format_ARGB32)
+	painter = QPainter(image)
+	frame.render(painter)
+	painter.end()
         image.save(output_file)
 
-    def wait_load(self, delay=0):
+    def wait_load(self, delay=1):
         # process app events until page loaded
         while not self._loaded:
             self.app.processEvents()
@@ -74,54 +84,70 @@ class Screenshot(QWebView):
         self._loaded = True
 
 class Webby:
-	def __init__(self,ip,hostname,port):
-		self.ip = ip
-		self.hostname = hostname
-		self.port = port
-		self.desc = ""
-		self.responses = {}
-		self.banner = ""
-		self.code = None
-		self.forms = False
-		self.login = False
-		self.ssl = True
-		self.url = None
-	def addPathResponse(self,path,response,forms,login,banner,statusCode):
-		self.responses[path] = response
-		self.forms = forms
-		self.login = login
-		self.code = statusCode
-		self.banner = banner
-	def toCSV(self):
-		#ip,name,port,protocol,service,banner,notes
-		if re.search(r'30[0-9]',str(self.code)):
-			notes = "%s|%s " % (self.code,self.desc)
-		elif not self.code:
-			notes = "FAILED_TO_CLASSIFY"
+        def __init__(self,ip,hostname,port):
+                self.ip = ip
+                self.hostname = hostname
+                self.port = port
+                self.desc = ""
+                self.responses = {}
+                self.banner = ""
+                self.code = None
+                self.forms = False
+                self.login = False
+                self.ssl = True
+                self.url = None
+        def addPathResponse(self,path,response,forms,login,banner,statusCode):
+                self.responses[path] = response
+                self.forms = forms
+                self.login = login
+                self.code = statusCode
+                self.banner = banner
+	def getPathContent(self):
+		result = ("","")
+		for path,response in self.responses.items():
+			if len(response) > len(result):
+				result = (path,response)
+		return result
+
+	def getID(self):
+		path,content = self.getPathContent()
+		ID = ""
+		if self.hostname != "" :
+			ID = "%s:%s/%s" % ( self.hostname,self.port,path )
 		else:
-			notes = "%s%s%s%s" % (self.code, \
-						"|"+self.desc if self.desc != "" else "", \
-						"|forms" if self.forms else "", \
-						"|login" if self.login else "") 
-			if self.code == 200 and self.url:
-				notes += "|"+self.url
-		return  "%s,%s,%s,TCP,%s,%s,%s" % ( \
-							self.ip,\
-							self.hostname, \
-							self.port, \
-							"https" if self.ssl else "http", \
-							self.banner, \
-							notes \
-							)
-	def debugPrint(self):
-		print "%s:%s forms:%s login:%s ssl:%s" % (self.ip,self.port,self.forms,self.login,self.ssl)
-		print "Desc: %s\tURL: %s\tcode: %s" % (self.desc,self.url,self.code)
-		try:
-			print "filename: %s" % (re.sub('[\W]+','.',self.url))
-		except:
-			print "failed filename"
-		for path,response in self.responses.iteritems():
-			print "\tpath: '%s'" % path
+			ID = "%s:%s/%s" % ( self.ip,self.port,path )
+		return ID.replace('//','/')
+
+        def toCSV(self):
+                #ip,name,port,protocol,service,banner,notes
+                if re.search(r'30[0-9]',str(self.code)):
+                        notes = "%d|%s " % (self.code,self.desc)
+                elif not self.code:
+                        notes = "FAILED_TO_CLASSIFY"
+                else:
+                        notes = "%s%s%s%s" % (self.code, \
+                                                "|"+self.desc if self.desc != "" else "", \
+                                                "|forms" if self.forms else "", \
+                                                "|login" if self.login else "")
+                        if self.code == 200 and self.url:
+                                notes += "|"+self.url
+                return  "%s,%s,%s,TCP,%s,%s,%s" % ( \
+                                                        self.ip,\
+                                                        self.hostname, \
+                                                        self.port, \
+                                                        "https" if self.ssl else "http", \
+                                                        self.banner, \
+                                                        notes \
+                                                        )
+        def debugPrint(self):
+                print "%s:%s forms:%s login:%s ssl:%s" % (self.ip,self.port,self.forms,self.login,self.ssl)
+                print "Desc: %s\tURL: %s\tcode: %s" % (self.desc,self.url,self.code)
+                try:
+                        print "filename: %s" % (re.sub('[\W]+','.',self.url))
+                except:
+                        print "failed filename"
+                for path,response in self.responses.iteritems():
+                        print "\tpath: '%s'" % path
 
 class color:
         HEADER = '\033[95m'
@@ -150,6 +176,8 @@ class Classifier:
 		self.verbosity = verbosity
 		self.control = BoundedSemaphore(value=self.threadCount)
 		self.useragent = choice(useragents)
+		if self.verbosity > 0:
+			sys.stderr.write("[I] Crawler UA set to' %s'\n" % self.useragent)
 
 	def inScope(self,host):
 		retries = self.retries
@@ -166,11 +194,11 @@ class Classifier:
 						result=True
 						break
 					except socket.gaierror:
-						sys.stderr.write("%s[*]Failed to resolve %s. skipping host.\n%s"% (color.RED,host,color.ENDC))
+						sys.stderr.write("%s[*] Failed to resolve %s. skipping host.\n%s"% (color.RED,host,color.ENDC))
 						ip = ""
 						break
 					except:
-						sys.stderr.write("%s[*]Resource busy..waiting...%s\n" %(color.YELO,color.ENDC))
+						sys.stderr.write("%s[*] Resource busy..waiting...%s\n" %(color.YELO,color.ENDC))
 						time.sleep(3)
 						retries-=1
                                 self.lookup[host] = ip
@@ -195,10 +223,11 @@ class Classifier:
 
 	def grabResponse(self,conn,path,key):
 		try:
-			headers = {"User-Agent": self.useragent}
+			#headers = {"User-Agent": self.useragent}
 			if self.verbosity > 1:
 				print "%s: grabbing response to path %s" % (key,path)
-			conn.request("GET",path,headers=headers)
+			#conn.request("GET",path,headers=headers)
+			conn.request("GET",path)
 			response = conn.getresponse()
 			return response
 		except socket.timeout as t:
@@ -262,8 +291,12 @@ class Classifier:
 				if 'server' in headers:
 					banner = headers['server']
 				if 'location' in headers:
-					if re.search('http',headers['location']):
-						host = headers['location'].split('/')[2]
+					if re.search('^http',headers['location']):
+						lhost = headers['location'].split('/')[2].split(':')[0]
+						try:
+							path = '/'+headers['location'].split('/',3)[3]
+						except IndexError:
+							path = '/'
 						portRE = re.search(':(?P<port>[0-9]+)/',headers['location'])
 						if portRE:
 							nport = portRE.group('port')
@@ -271,23 +304,25 @@ class Classifier:
 							nport = 443
 						else:
 							nport = 80
-						if self.inScope(host)[2]:
+						if host == lhost and path not in pathHistory:
+							paths.append(path)
+						elif self.inScope(lhost)[2]:
 							self.lock.acquire()
-							if host in self.history and nport in self.history[host]:
+							if lhost in self.history and nport in self.history[lhost]:
 								pass
-							elif host in self.toClassify and host in self.history:
-								if nport in self.history[host]:
+							elif lhost in self.toClassify and lhost in self.history:
+								if nport in self.history[lhost]:
 									pass
 								else:
-									self.toClassify[host].add(nport)
-							elif host in self.toClassify and host not in self.history:
-								self.toClassify[host].add(nport)
+									self.toClassify[lhost].add(nport)
+							elif lhost in self.toClassify and lhost not in self.history:
+								self.toClassify[lhost].add(nport)
 							else:
-								self.toClassify[host] = set()
-								self.toClassify[host].add(nport)
+								self.toClassify[lhost] = set()
+								self.toClassify[lhost].add(nport)
 							self.lock.release()
 						else:
-							sys.stderr.write("%s[*] %s is out of scope.\n%s"% (color.RED,host,color.ENDC))
+							sys.stderr.write("%s[*] %s is out of scope.\n%s"% (color.RED,lhost,color.ENDC))
 						record.desc = headers['location']	
 					elif headers['location'] not in pathHistory:
 						paths.append(headers['location'])
@@ -308,7 +343,9 @@ class Classifier:
 						form = True
 					if re.search('input.*type\s*=\s*(?:\'|"| *)password',data,re.I):
 						login = True
-				record.addPathResponse(path,response,form,login,banner,code)
+				record.addPathResponse(path,data,form,login,banner,code)
+			else:
+				print "%s[!] %s Connection Failed: %s:%s|%s" % (color.RED,color.ENDC,host,port,path)
 			self.storage[key] = record
 		#in threads, this behaves like thread.exit()
 		self.control.release()
@@ -401,6 +438,7 @@ def harvestIL(ILfile):
 			webbies[host].add(port)
 	return webbies
 
+
 def printCSV(classifier):
 	sys.stderr.write("Saving csv...\n")
 	print "IP,NAME,PORT,PROTOCOL,SERVICE,BANNER,NOTES"
@@ -408,6 +446,8 @@ def printCSV(classifier):
 		print webby.toCSV()
 
 parser = argparse.ArgumentParser(prog='classify.webbies.py',description='enumerate and display detailed information about web listeners')
+parser.add_argument("-A","--analyze",help="generate graphs and csv grouped by site similiarity",default=None)
+parser.add_argument("-d","--debug",help="saves pickle file of webbies harvested",dest="debug",action="store_true",default=False)
 parser.add_argument("-g","--gnmap",help="gnmap input file")
 parser.add_argument("-G","--gnmapdir",help="Directory containing gnmap input files")
 parser.add_argument("-i","--inputList",help="input file with hosts listed http(s)://ip:port/ or ip:port per line")
@@ -422,7 +462,7 @@ parser.add_argument("-t","--timeout",type=int,help="Set base timeout. Default is
 parser.add_argument("-T","--threads",type=int,help="Set the max number of threads. The classifier will kept it *around* this number",default=5)
 parser.add_argument("-u","--useragents",help="specifies file of user-agents to randomly use.",default=None)
 parser.add_argument("-v","--verbosity",help="-v for regular output, -vv for debug level",action="count",default=0)
-parser.add_argument("-V","--version",action='version',version='%(prog)s 1.0')
+parser.add_argument("-V","--version",action='version',version='%(prog)s 2.0')
 
 if len(sys.argv) < 2:
 	parser.print_help()
@@ -459,7 +499,7 @@ if not scope:
 			ip = socket.gethostbyname(name)
 			ips.append(ip)
 		except:
-			print "failed to resolve '%s' during scope auto-generation. Excluding"
+			print "failed to resolve '%s' during scope auto-generation. Excluding" % name
 	scope = map(lambda x: IPNetwork(x),ips)
 
 if args.useragents:
@@ -481,6 +521,74 @@ images = []
 if args.output:
 	sys.stdout = open(args.output,'w')
 printCSV(classifier)
+
+if args.debug:
+	with open('debugging.clasifier.p','wb') as fp:
+			pickle.dump(copy.deepcopy(classifier.storage),fp)
+
+if args.analyze:
+	sys.stderr.write("Analyzing...")
+	threshold = 0.85
+
+	masterGraph = PG.AGraph(directed=True, strict=True)
+	result_groups = []
+	for key,webby in classifier.storage.items():
+		if webby.code:
+			content =  webby.getPathContent()
+			setToGroup = False
+			for group in result_groups:
+				matched = 0
+				for entryID,entryWebby in group.items():
+					compare = SequenceMatcher(None,entryWebby.getPathContent(),content).ratio()
+					if compare > threshold:
+						matched+=1
+				if matched == len(group.items()):
+					setToGroup = True
+					group[webby.getID()] = webby
+			if not setToGroup:
+				newGroup = {}
+				newGroup[webby.getID()] = webby
+				for xkey,xwebby in classifier.storage.items():
+					if xwebby.code:
+						compare = SequenceMatcher(None,xwebby.getPathContent(),content).ratio()
+						if compare > threshold and xwebby.getID() != webby.getID():
+							newGroup[xwebby.getID()] = xwebby
+				result_groups.append(newGroup)
+
+	sys.stderr.write("%d unique groups..." % len(result_groups))
+	graph = PG.AGraph(directored=True, strict=True)
+	i=0
+	if not os.path.exists(args.analyze):
+		os.makedirs(args.analyze)
+	for group in result_groups:
+		i+=1
+		gID = "group%s" % i
+		graph = PG.AGraph(directored=True, strict=True,name=gID)
+		for url,webby in group.iteritems():
+			wcolor = 'Black'
+			# no switch cases -_-
+			if re.search("30[0-9]",str(webby.code)):
+				wcolor = 'Green'
+			if re.search("40[0-9]",str(webby.code)):
+				wcolor = 'Blue'
+			if re.search("50[0-9]",str(webby.code)):
+				wcolor = 'Red'
+			graph.add_edge("Group %d" % i,url)
+			n = graph.get_node(url)
+			n.attr['color'] = wcolor
+
+			masterGraph.add_edge("Group %d" % i,url)
+			n = masterGraph.get_node(url)
+			n.attr['color'] = wcolor
+		graph.layout(prog='circo')
+		graph.draw('%s/%s.ps' % (args.analyze,gID), prog='circo')
+		f = open("%s/%s.csv" % (args.analyze,gID),'w') 
+		for url,webby in group.items():
+			f.write("%s://%s\n" % ("https" if webby.ssl else "http", url))
+		f.close()
+	masterGraph.layout(prog='circo')
+	masterGraph.draw('%s/%s.ps' % (args.analyze,"masterGraph"), prog='circo')
+	sys.stderr.write("...finished.\n")
 
 if args.screenshotDir:
 	sys.stderr.write("%sGathering screenshots...%s\n" % (color.BLUE,color.ENDC))
