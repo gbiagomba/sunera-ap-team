@@ -19,10 +19,10 @@
 #
 #    Program Name:      classify.webbies.py
 #    Purpose:           Enumerate and screenshot web services
-#    Version:           2.0
+#    Version:           3.1
 #    Code Repo:         http://code.google.com/p/sunera-ap-team/
 
-import sys,re,httplib,socket,signal,argparse,time,os
+import sys,re,httplib,socket,signal,argparse,time,os,subprocess,shlex
 from netaddr import IPNetwork,IPAddress
 from random import choice
 from threading import *
@@ -34,54 +34,7 @@ import copy
 #anaylze
 from difflib import SequenceMatcher
 import pygraphviz as PG
-# original screenshot class written by plumo:
-# http://webscraping.com/blog/Webpage-screenshots-with-webkit/
-# thanks plumo
-from PyQt4.QtCore import *
-from PyQt4.QtGui import *
-from PyQt4.QtWebKit import *
 
-class Browser(QWebPage):
-	def __init__(self,useragents):
-		QWebPage.__init__(self)
-		self.useragent = choice(useragents)
-		self.settings().setAttribute(QWebSettings.JavascriptEnabled,False)
-	def userAgentForUrl(self,url):
-		return self.useragent
-
-class Screenshot(QWebView):
-    def __init__(self,useragents):
-        self.app = QApplication(sys.argv)
-        QWebView.__init__(self)
-        self._loaded = False
-        self.loadFinished.connect(self._loadFinished)
-	self.setPage(Browser(useragents))
-
-    def capture(self, url, output_file):
-        self.load(QUrl(url))
-        self.wait_load()
-        # set to webpage size
-        frame = self.page().mainFrame()
-	if frame.contentsSize().isNull():
-		self.page().setViewportSize(QSize(100,100))
-	else:
-		self.page().setViewportSize(frame.contentsSize())
-
-	image = QImage(self.page().viewportSize(), QImage.Format_ARGB32)
-	painter = QPainter(image)
-	frame.render(painter)
-	painter.end()
-        image.save(output_file)
-
-    def wait_load(self, delay=1):
-        # process app events until page loaded
-        while not self._loaded:
-            self.app.processEvents()
-            time.sleep(delay)
-        self._loaded = False
-
-    def _loadFinished(self, result):
-        self._loaded = True
 
 class Webby:
         def __init__(self,ip,hostname,port):
@@ -125,12 +78,11 @@ class Webby:
                 elif not self.code:
                         notes = "FAILED_TO_CLASSIFY"
                 else:
-                        notes = "%s%s%s%s" % (self.code, \
-                                                "|"+self.desc if self.desc != "" else "", \
-                                                "|forms" if self.forms else "", \
-                                                "|login" if self.login else "")
-                        if self.code == 200 and self.url:
-                                notes += "|"+self.url
+                        notes = "%s%s%s%s%s" % (self.code, \
+                                                "|"+self.desc if self.desc != "" else "|", \
+                                                "|forms" if self.forms else "|", \
+                                                "|login" if self.login else "|",\
+						"|"+self.url if self.url and self.code == 200 else "|")
                 return  "%s,%s,%s,TCP,%s,%s,%s" % ( \
                                                         self.ip,\
                                                         self.hostname, \
@@ -345,7 +297,7 @@ class Classifier:
 						login = True
 				record.addPathResponse(path,data,form,login,banner,code)
 			else:
-				print "%s[!] %s Connection Failed: %s:%s|%s" % (color.RED,color.ENDC,host,port,path)
+				print "%s[!]%s Connection Failed: %s:%s|%s" % (color.RED,color.ENDC,host,port,path)
 			self.storage[key] = record
 		#in threads, this behaves like thread.exit()
 		self.control.release()
@@ -375,13 +327,14 @@ class Classifier:
 			self.threads = [t.join(1) for t in self.threads if t is not None and t.isAlive()]
 
 def signalHandler(signal, frame):
-        sys.stderr.write("\n\n[*] Ctrl+C detected. printing webbies debug\n\n")
-	if args.verbosity > 1:
-		for key,webby in classifier.storage.iteritems():
-			webby.debugPrint()
-	sys.stderr.write("\n[*]Writing classifer dump to 'classifier_dump.csv\n")
-	sys.stdout = open('classifier_dump.csv','w')
-	printCSV(classifier)
+        sys.stderr.write("\n\n[*] Ctrl+C detected. exiting...\n\n")
+	if not args.pickle:
+		if args.verbosity > 1:
+			for key,webby in classifier.storage.iteritems():
+				webby.debugPrint()
+		sys.stderr.write("\n[*]Writing classifer dump to 'classifier_dump.csv\n")
+		sys.stdout = open('classifier_dump.csv','w')
+		printCSV(classifier.storage)
         sys.exit(1)
 
 def harvestNBE(nbeFile):
@@ -439,11 +392,12 @@ def harvestIL(ILfile):
 	return webbies
 
 
-def printCSV(classifier):
+def printCSV(storage):
 	sys.stderr.write("Saving csv...\n")
 	print "IP,NAME,PORT,PROTOCOL,SERVICE,BANNER,NOTES"
-	for key,webby in classifier.storage.items():
-		print webby.toCSV()
+	if not args.pickle:
+		for key,webby in storage.items():
+			print webby.toCSV()
 
 parser = argparse.ArgumentParser(prog='classify.webbies.py',description='enumerate and display detailed information about web listeners')
 parser.add_argument("-A","--analyze",help="generate graphs and csv grouped by site similiarity",default=None)
@@ -455,14 +409,15 @@ parser.add_argument("-n","--nbe",help="NBE input file")
 parser.add_argument("-N","--nbedir",help="Directory containing NBE files")
 parser.add_argument("-o","--output",help="Output file. Supported types are csv")
 parser.add_argument("-p","--maxpaths",help="Max number of redirect paths to attempt per host. Default is 4",default=4)
+parser.add_argument("-P","--pickle",help="Load in previous webbies crawl for analysis and/or screenshots",default=None)
 parser.add_argument("-r","--retries",type=int,help="number of retries. Default is 3",default=3)
 parser.add_argument("-s","--scope",help="Scope file with IP Networks in CIDR format")
-parser.add_argument("-S","--screenshotDir",help="enables and specifies screenshot dir.",default=None)
+parser.add_argument("-S","--screenshotDir",help="enables and specifies screenshot dir. REQUIRES PHANTOMJS",default=None)
 parser.add_argument("-t","--timeout",type=int,help="Set base timeout. Default is 2 seconds",default=2)
 parser.add_argument("-T","--threads",type=int,help="Set the max number of threads. The classifier will kept it *around* this number",default=5)
 parser.add_argument("-u","--useragents",help="specifies file of user-agents to randomly use.",default=None)
 parser.add_argument("-v","--verbosity",help="-v for regular output, -vv for debug level",action="count",default=0)
-parser.add_argument("-V","--version",action='version',version='%(prog)s 2.0')
+parser.add_argument("-V","--version",action='version',version='%(prog)s 3.1')
 
 if len(sys.argv) < 2:
 	parser.print_help()
@@ -470,37 +425,6 @@ if len(sys.argv) < 2:
 
 args = parser.parse_args()
 webbies = {}
-scope = None
-if args.scope:
-	scopeFile = args.scope
-	scope = map(lambda x: IPNetwork(x),filter(None,open(scopeFile).read().split('\n')))
-
-if args.nbe:
-	webbies = dict(webbies.items() + harvestNBE(args.nbe).items())
-elif args.nbedir:
-	for xfile in os.listdir(args.nbedir):
-		if xfile.endswith(".nbe"):
-			webbies = dict(webbies.items() + harvestNBE(args.nbedir+xfile).items())
-if args.gnmap:
-	webbies = dict(webbies.items() + harvestGnmap(args.gnmap).items()) 
-if args.gnmapdir:
-	for xfile in os.listdir(args.gnmapdir):
-		if xfile.endswith(".gnmap"):
-			webbies = dict(webbies.items() + harvestGnmap(args.gnmapdir+xfile).items())
-	
-if args.inputList:
-	webbies = dict(webbies.items() +  harvestIL(args.inputList).items())
-
-if not scope:
-	toResolve = filter(lambda x: re.search('[a-zA-Z]',x),webbies.keys())
-	ips = filter(lambda x: re.search('[\d\.]+',x),webbies.keys())	
-	for name in toResolve:
-		try:
-			ip = socket.gethostbyname(name)
-			ips.append(ip)
-		except:
-			print "failed to resolve '%s' during scope auto-generation. Excluding" % name
-	scope = map(lambda x: IPNetwork(x),ips)
 
 if args.useragents:
 	useragents = filter(None,open(args.useragents).read().split('\n'))
@@ -513,26 +437,74 @@ else:
 	"Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; WOW64; Trident/6.0)",\
 	"Mozilla/5.0 (iPad; CPU OS 6_1_3 like Mac OS X) AppleWebKit/536.26 (KHTML, like Gecko) Version/6.0 Mobile/10B329 Safari/8536.25"]
 
-classifier = Classifier(scope,webbies,args.timeout,args.retries,args.threads,args.maxpaths,useragents,args.verbosity)
-signal.signal(signal.SIGINT,signalHandler)
-classifier.run()
+if not args.pickle:
+	scope = None
+	if args.scope:
+		scopeFile = args.scope
+		scope = map(lambda x: IPNetwork(x),filter(None,open(scopeFile).read().split('\n')))
 
-images = []
+	if args.nbe:
+		webbies = dict(webbies.items() + harvestNBE(args.nbe).items())
+	elif args.nbedir:
+		for xfile in os.listdir(args.nbedir):
+			if xfile.endswith(".nbe"):
+				webbies = dict(webbies.items() + harvestNBE(args.nbedir+xfile).items())
+	if args.gnmap:
+		webbies = dict(webbies.items() + harvestGnmap(args.gnmap).items()) 
+	if args.gnmapdir:
+		for xfile in os.listdir(args.gnmapdir):
+			if xfile.endswith(".gnmap"):
+				webbies = dict(webbies.items() + harvestGnmap(args.gnmapdir+xfile).items())
+		
+	if args.inputList:
+		webbies = dict(webbies.items() +  harvestIL(args.inputList).items())
+
+	if not scope:
+		toResolve = filter(lambda x: re.search('[a-zA-Z]',x),webbies.keys())
+		ips = filter(lambda x: re.search('^[\d\.]+$',x),webbies.keys())	
+		for name in toResolve:
+			try:
+				ip = socket.gethostbyname(name)
+				ips.append(ip)
+			except:
+				print "failed to resolve '%s' during scope auto-generation. Excluding" % name
+		scope = map(lambda x: IPNetwork(x),ips)
+
+
+	classifier = Classifier(scope,webbies,args.timeout,args.retries,args.threads,args.maxpaths,useragents,args.verbosity)
+	signal.signal(signal.SIGINT,signalHandler)
+	classifier.run()
+
+	images = []
+
+	if args.debug:
+		with open('debugging.clasifier.p','wb') as fp:
+				pickle.dump(copy.deepcopy(classifier.storage),fp)
+
+if args.pickle:
+	with open(args.pickle,'rb') as fp:
+                storage = pickle.load(fp)
+		print "webbies loaded from file '%s'." % args.pickle
+else:
+	storage = classifier.storage
+
 if args.output:
 	sys.stdout = open(args.output,'w')
-printCSV(classifier)
-
-if args.debug:
-	with open('debugging.clasifier.p','wb') as fp:
-			pickle.dump(copy.deepcopy(classifier.storage),fp)
+	printCSV(storage)
 
 if args.analyze:
-	sys.stderr.write("Analyzing...")
+	sys.stderr.write("Analyzing...") 
 	threshold = 0.85
+	if not args.pickle:
+		sys.stderr.write("pickle file '%s.p' created...\n" % args.analyze)
+		with open('%s.p' % args.analyze,'wb') as fp:
+			pickle.dump(copy.deepcopy(classifier.storage),fp)
 
-	masterGraph = PG.AGraph(directed=True, strict=True)
+	if not os.path.exists(args.analyze):
+		os.makedirs(args.analyze)
+
 	result_groups = []
-	for key,webby in classifier.storage.items():
+	for key,webby in storage.items():
 		if webby.code:
 			content =  webby.getPathContent()
 			setToGroup = False
@@ -548,7 +520,7 @@ if args.analyze:
 			if not setToGroup:
 				newGroup = {}
 				newGroup[webby.getID()] = webby
-				for xkey,xwebby in classifier.storage.items():
+				for xkey,xwebby in storage.items():
 					if xwebby.code:
 						compare = SequenceMatcher(None,xwebby.getPathContent(),content).ratio()
 						if compare > threshold and xwebby.getID() != webby.getID():
@@ -556,17 +528,31 @@ if args.analyze:
 				result_groups.append(newGroup)
 
 	sys.stderr.write("%d unique groups..." % len(result_groups))
+	overviewGraph = PG.AGraph(directed=True)
+	i=0
+	for group in result_groups:
+		i+=1
+		overviewGraph.add_node("Group %d" % i)
+		n = overviewGraph.get_node("Group %d" % i)
+		n.attr['color'] =  "#%s" % (''.join(choice('abcedf0123456789') for x in range(6)))
+		n.attr['style'] = 'filled'
+		n.attr['height'] = (len(group) * .25)
+		n.attr['width'] = (len(group) * .25)
+		n.attr['fontsize'] = 20.0
+
+	overviewGraph.layout(prog='circo')
+	overviewGraph.draw('%s/%s.ps' % (args.analyze,"overviewGraph"), prog='circo')
+
+	masterGraph = PG.AGraph(directed=True, strict=True)
 	graph = PG.AGraph(directored=True, strict=True)
 	i=0
-	if not os.path.exists(args.analyze):
-		os.makedirs(args.analyze)
 	for group in result_groups:
 		i+=1
 		gID = "group%s" % i
 		graph = PG.AGraph(directored=True, strict=True,name=gID)
 		for url,webby in group.iteritems():
-			wcolor = 'Black'
 			# no switch cases -_-
+			wcolor = 'Grey'
 			if re.search("30[0-9]",str(webby.code)):
 				wcolor = 'Green'
 			if re.search("40[0-9]",str(webby.code)):
@@ -574,12 +560,15 @@ if args.analyze:
 			if re.search("50[0-9]",str(webby.code)):
 				wcolor = 'Red'
 			graph.add_edge("Group %d" % i,url)
-			n = graph.get_node(url)
-			n.attr['color'] = wcolor
+			if wcolor:
+				n.attr['color'] = wcolor
+				n.attr['style'] = 'filled' 
+				n = graph.get_node(url)
 
 			masterGraph.add_edge("Group %d" % i,url)
 			n = masterGraph.get_node(url)
 			n.attr['color'] = wcolor
+			n.attr['style'] = 'filled' 
 		graph.layout(prog='circo')
 		graph.draw('%s/%s.ps' % (args.analyze,gID), prog='circo')
 		f = open("%s/%s.csv" % (args.analyze,gID),'w') 
@@ -594,8 +583,10 @@ if args.screenshotDir:
 	sys.stderr.write("%sGathering screenshots...%s\n" % (color.BLUE,color.ENDC))
 	if not os.path.exists(args.screenshotDir):
 		os.makedirs(args.screenshotDir)
-	s = Screenshot(useragents)
-	for key,webby in classifier.storage.items():
+	ua = choice(useragents)
+	if args.verbosity > 0:
+		sys.stderr.write("[I] Screenshot UA set to '%s'\n" % ua)
+	for key,webby in storage.items():
 		if webby.code==200 and webby.url:
 			filename = re.sub('[\W]+','.',webby.url)
 			if filename.endswith('.'):
@@ -604,5 +595,9 @@ if args.screenshotDir:
 				filename+=".png"
 			if args.verbosity > 1:
 				sys.stderr.write("%sSaving file:%s%s\n" % (color.BLUE,color.ENDC,filename))
-			s.capture(webby.url,args.screenshotDir+'/'+filename)
-			images.append(filename)
+			command = "phantomjs --ignore-ssl-errors=yes %s/screenshot.js \"%s\" %s %s" % \
+				(os.path.dirname(os.path.realpath(__file__)),ua,webby.url,args.screenshotDir+'/'+filename)
+			proc = subprocess.Popen(shlex.split(command))
+			stdout,stderr =  proc.communicate()
+			if stderr:
+				print stderr
