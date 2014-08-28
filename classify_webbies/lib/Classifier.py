@@ -8,7 +8,7 @@ from Webby import Webby
 from DNSHandler import DNSHandler
 
 class Classifier:
-    def __init__(self,scopeObj,startingWebbies,useragents,threadCount,verbosity,resolvers=[]):
+    def __init__(self,scopeObj,startingWebbies,useragents,threadCount,verbosity,nolookups,resolvers=[]):
         self.scopeObj = scopeObj
         self.resolvers = resolvers
         self.useragent = choice(useragents)
@@ -21,6 +21,7 @@ class Classifier:
         self.maxWait = 15
         self.verbosity = verbosity
         self.threadCount = threadCount
+        self.nolookups = nolookups
 
     def reinit(self):
         self.webbyPool = GreenPool(size=self.threadCount)
@@ -62,6 +63,9 @@ class Classifier:
                 except socket.error,ex:
                     #failed to connect to webby
                     print_error("Socket Failure %s(%s):%s %s" % (webby.ip,webby.hostname,webby.port,ex))
+                    webby.success = False
+                    webby.errormsg = ex
+                    self.storage.add(webby)
                 if requestSent:
                     try:
                         response = conn.getresponse()
@@ -73,7 +77,7 @@ class Classifier:
                         webby.url = "http://" if not webby.ssl else "https://"
                         webby.url += webby.hostname if webby.hostname else webby.ip
                         webby.url +=":%s" % webby.port if webby.port else ""
-                        webby.url += path
+                        webby.url += path if path.startswith('/') else '/'+path
 
                         webby.lastResponse = data
 
@@ -93,8 +97,9 @@ class Classifier:
                                     else: # catch //foo.com/ redirects that use current scheme
                                         port = webby.port
                                 if (host == webby.hostname or host == webby.ip) and port == webby.port:
-                                    paths.add(urlObj.path)
+                                    paths.add(urlObj.path if urlObj.path.startswith('/') else '/'+urlObj.path)
                                 else:
+                                    webby.redirect = urlObj.geturl()
                                     if re.search('[A-Za-z]',host):
                                         newWebby = Webby(ip="",hostname=host,port=port)
                                     else:
@@ -103,7 +108,7 @@ class Classifier:
                                         self.toClassify.add(newWebby)
                                     self.storage.add(webby)
                             else:
-                                paths.add(urlObj.path)
+                                paths.add(urlObj.path if urlObj.path.startswith('/') else '/'+urlObj.path)
                                 if pathCount == (self.maxRedirect-1): #infinite redirect
                                     self.storage.add(webby)
                         else:
@@ -121,6 +126,9 @@ class Classifier:
                     except Exception,ex:
                         #connection timed out
                         print_error("Timeout Error %s(%s):%s %s" % (webby.ip,webby.hostname,webby.port,ex))
+                        webby.success = False
+                        webby.errormsg = ex
+                        self.storage.add(webby)
 
     def enumerate(self,webby):
         myDNSHandler = DNSHandler()
@@ -155,7 +163,7 @@ class Classifier:
     def run(self):
         while len(self.toClassify) > 0:
             webby = self.toClassify.pop()
-            if webby.firstrun:
+            if webby.firstrun and not self.nolookups:
                 if self.verbosity > 0:
                     print_info("enumerating webby %s(%s):%s" % (webby.ip,webby.hostname,webby.port))
                 self.DNSPool.spawn_n(self.enumerate,webby)
@@ -164,5 +172,5 @@ class Classifier:
                 self.webbyHistory.add(webby)
                 self.webbyPool.spawn_n(self.fetch,webby)
 
-            self.webbyPool.waitall()
-            self.DNSPool.waitall()
+        self.webbyPool.waitall()
+        self.DNSPool.waitall()

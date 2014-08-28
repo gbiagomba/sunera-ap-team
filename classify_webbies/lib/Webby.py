@@ -6,11 +6,14 @@ class Webby:
         self.port = port
         self.title = ""
         self.lastResponse = ""
+        self.redirect = ""
         self.banner = ""
         self.code = 0
         self.forms = False
         self.login = False
         self.ssl = None
+        self.success = True
+        self.errormsg= ""
         self.url = ""
         self.group = 0
 
@@ -20,7 +23,10 @@ class Webby:
         login = "login" if self.login else ""
         forms = "forms" if self.forms else ""
         title = '"%s"' % self.title if self.title else ""
-        notes = " ".join([str(self.code),self.url,title,forms,login]).rstrip(' ')
+        if self.success:
+            notes = " ".join([str(self.code),self.redirect if self.redirect else self.url,title,forms,login]).rstrip(' ')
+        else:
+            notes = """Error: {webby.errormsg}""".format(webby=self)
         csv = """{webby.ip},{webby.hostname},{webby.port},tcp,{service},{webby.banner},{notes},{webby.group}""".format(webby=self,service=service,notes=notes)
         return csv
 

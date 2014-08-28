@@ -51,7 +51,8 @@ if __name__ == "__main__":
     parser.add_argument("-T","--threads",type=int,help="Set the max number of threads.",default=5)
     parser.add_argument("-u","--useragents",help="specifies file of user-agents to randomly use.",default=None)
     parser.add_argument("-v","--verbosity",help="-v for regular output, -vv for debug level",action="count",default=0)
-    parser.add_argument("-V","--version",action='version',version='%(prog)s 4.1')
+    parser.add_argument("-V","--version",action='version',version='%(prog)s 4.3')
+    parser.add_argument("-X","--nolookups",help="disable additional reverse resolving",action='store_true')
 
     if len(sys.argv) < 2:
         parser.print_help()
@@ -81,7 +82,7 @@ if __name__ == "__main__":
             restore = True
 
     if not restore and not args.pickle:
-        myHarvester = Harvester()
+        myHarvester = Harvester(args.verbosity)
         if args.nessus:
             myHarvester.harvestNessus(args.nessus)
         if args.nessusdir:
@@ -94,6 +95,7 @@ if __name__ == "__main__":
             myHarvester.harvestIL(args.inputList)
 
         webbies = myHarvester.webbies
+
         if args.scope:
             try:
                 iprange = filter(None,open(args.scope).read().split('\n'))
@@ -106,7 +108,7 @@ if __name__ == "__main__":
             iprange = filter(None,map(lambda x: x.ip,webbies))
             myScope = Scope(iprange)
 
-        myClassifier = Classifier(myScope,webbies,useragents,args.threads,args.verbosity,args.resolvers.split(','))
+        myClassifier = Classifier(myScope,webbies,useragents,args.threads,args.verbosity,args.nolookups,args.resolvers.split(','))
 
     else:
         restoref = args.pickle if args.pickle else ".lastrun.p"
