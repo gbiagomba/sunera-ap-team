@@ -20,7 +20,7 @@
 #
 #    Program Name:      classify.webbies.py
 #    Purpose:           Enumerate and screenshot web services
-#    Version:           4.1
+#    Version:           4.4
 #    Code Repo:         http://code.google.com/p/sunera-ap-team/
 
 import sys,argparse,os
@@ -38,6 +38,7 @@ from lib.DNSHandler import DNSHandler
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog='classify.webbies.py',description='enumerate and display detailed information about web listeners')
     parser.add_argument("-A","--analyze",help="analyze web listeners responses and group according similarity",action='store_true')
+    parser.add_argument("-b","--bing_key",help="bing API key",default="")
     parser.add_argument("-g","--gnmap",help="gnmap input file")
     parser.add_argument("-G","--gnmapdir",help="Directory containing gnmap input files")
     parser.add_argument("-i","--inputList",help="input file with hosts listed http(s)://ip:port/ or ip:port per line")
@@ -51,7 +52,7 @@ if __name__ == "__main__":
     parser.add_argument("-T","--threads",type=int,help="Set the max number of threads.",default=5)
     parser.add_argument("-u","--useragents",help="specifies file of user-agents to randomly use.",default=None)
     parser.add_argument("-v","--verbosity",help="-v for regular output, -vv for debug level",action="count",default=0)
-    parser.add_argument("-V","--version",action='version',version='%(prog)s 4.3')
+    parser.add_argument("-V","--version",action='version',version='%(prog)s 4.4')
     parser.add_argument("-X","--nolookups",help="disable additional reverse resolving",action='store_true')
 
     if len(sys.argv) < 2:
@@ -63,15 +64,6 @@ if __name__ == "__main__":
 
     if args.useragents:
         useragents = filter(None,open(args.useragents).read().split('\n'))
-    else:
-        useragents = [ \
-        "Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 5.1; Trident/4.0; Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1) ; .NET CLR 1.1.4322; .NET CLR 2.0.50727; .NET CLR 3.0.04506.648; .NET CLR 3.5.21022; .NET CLR 3.0.4506.2152; .NET CLR 3.5.30729)", \
-        "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/27.0.1453.116 Safari/537.36", \
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/27.0.1453.116 Safari/537.36",\
-        "Mozilla/5.0 (Windows NT 6.1; WOW64; rv:22.0) Gecko/20100101 Firefox/22.0",\
-        "Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; WOW64; Trident/6.0)",\
-        "Mozilla/5.0 (iPad; CPU OS 6_1_3 like Mac OS X) AppleWebKit/536.26 (KHTML, like Gecko) Version/6.0 Mobile/10B329 Safari/8536.25"]
-
 
     restore = False
     myClassifier = None
@@ -100,6 +92,9 @@ if __name__ == "__main__":
             try:
                 iprange = filter(None,open(args.scope).read().split('\n'))
                 myScope = Scope(iprange)
+                if not myScope.nets:
+                    print_error("Scope not set. Aborting")
+                    sys.exit(1)
                 print_info("Scope set to networks listed in '%s'" % args.scope)
             except Exception,ex:
                 print_error("Failed reading scope argument. %s" % ex)
@@ -108,7 +103,16 @@ if __name__ == "__main__":
             iprange = filter(None,map(lambda x: x.ip,webbies))
             myScope = Scope(iprange)
 
-        myClassifier = Classifier(myScope,webbies,useragents,args.threads,args.verbosity,args.nolookups,args.resolvers.split(','))
+        myClassifier = Classifier(
+                scopeObj=myScope,
+                startingWebbies=webbies,
+                useragents=useragents,
+                threadCount = args.threads,
+                verbosity = args.verbosity,
+                nolookups = args.nolookups,
+                resolvers = args.resolvers.split(','),
+                bing_key = args.bing_key
+                )
 
     else:
         restoref = args.pickle if args.pickle else ".lastrun.p"
