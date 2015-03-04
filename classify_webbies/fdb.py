@@ -1,4 +1,5 @@
 #!/usr/bin/env python2.7
+
 #    Copyright (C) 2015 Sunera, LLC
 #
 #    This program is free software: you can redistribute it and/or modify
@@ -56,6 +57,7 @@ def run_fdb(q,wordlist,extensions,threads,verbosity,output_dir):
     except (KeyboardInterrupt,SystemExit):
         myfdb.die = True
         q.put(host)
+        sleep(11)
 
     for x in filter(lambda x: x.code != 404,myfdb.results):
         output.write("{code},{url},{length}\n".format(url=x.url,code=x.code,length=x.length))

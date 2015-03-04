@@ -28,7 +28,7 @@ class Analyzer:
 
         print_info("Creating Groups")
         for webby in webbies:
-            if webby.code and not webby.group:
+            if webby.code and webby.success and not webby.group:
                 match = False
                 for groupNo,webbies in groups.items():
                     matched = 0

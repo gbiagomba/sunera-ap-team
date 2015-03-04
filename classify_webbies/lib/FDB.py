@@ -17,7 +17,7 @@ from Probe import *
 from NotFoundHandler import *
 
 class FDB:
-    def __init__(self,host,wordlist,extensions,threads,verbosity):
+    def __init__(self,host,wordlist,extensions,threads,verbosity,proxy=""):
         self.PROBE_MISSING_COUNT = 4
         self.MAX_TIME = 60
         self.MAX_FAIL = 30
@@ -30,6 +30,8 @@ class FDB:
 
         self.host = ""
         self.total = 0
+        self.proxies = {}
+        self.max_word_l = 0
         self.wordlist = set()
         self.extensions = []
         self.threads = threads
@@ -37,12 +39,16 @@ class FDB:
         self.die = False
         self.results = []
         self.notFound = set()
+        self.nfh = None
         self.verbosity = verbosity
 
         self.start_time = None
         self.stop_time = None
 
-        self.nfh = NotFoundHandler()
+        if proxy:
+            self.proxies['http'] = proxy
+            self.proxies['https'] = proxy
+
         self.pool = Pool(threads)
         self.s = Session()
         self.s.headers= {'User-Agent':choice(useragents),'Connection':'Keep-Alive'}
@@ -66,6 +72,8 @@ class FDB:
                 self.wordlist = set(map(lambda x: x.replace('\r',''),filter(None,gzip.open(wordlist,'rb').read().split('\n'))))
             else:
                 self.wordlist = set(filter(None,open(wordlist).read().split('\n')))
+            self.max_word_l = len(max(self.wordlist)) + len(max(self.extensions)) + 1 # 1 is for the dot. ie: .html
+            self.nfh = NotFoundHandler(max_word=self.max_word_l)
         except Exception,ex:
             print_error("Failure loading wordlist {wordlist}:{msg}".format(wordlist=wordlist,msg=ex))
 
@@ -91,12 +99,19 @@ class FDB:
             response = None
             try:
                 url = urljoin(self.host.geturl(),uri)
-                if self.verbosity > 1:
+                if self.verbosity > 2:
                     print_info("requesting {url}".format(url=url))
-                response = self.s.get(url,allow_redirects=False,verify=False)
+
+                response = self.s.get(
+                    url,
+                    allow_redirects=False,
+                    verify=False,
+                    stream=False,
+                    proxies=self.proxies
+                )
                 code = response.status_code
                 body = response.text
-                if self.verbosity > 2:
+                if self.verbosity > 3:
                     print_info("response {url}: {code} {size}".format(url=url,code=code,size=len(body)))
                 self.results.append(Probe(url,code,body))
                 self.FAILS = 0
@@ -114,7 +129,14 @@ class FDB:
                 try:
                     if self.verbosity > 1:
                         print_info("404 Probe: [{url}]".format(url=url))
-                    r = self.s.get(url,allow_redirects=False,verify=False)
+                    r = self.s.get(
+                        url,
+                        allow_redirects=False,
+                        verify=False,
+                        stream=False,
+                        proxies=self.proxies
+                        )
+
                     self.nfh.add(url,r.status_code,r.text)
                 except Exception,ex:
                     msg = "Failed probe_missing {host}: {etype}::{msg}".format(host=self.host.geturl(),etype=type(ex),msg=ex)
@@ -129,7 +151,14 @@ class FDB:
                         url = urljoin(self.host.geturl(),uri)
                         if self.verbosity > 1:
                             print_info("404 Probe: [{url}]".format(url=url))
-                        r = self.s.get(url,allow_redirects=False,verify=False)
+                        r = self.s.get(
+                            url,
+                            allow_redirects=False,
+                            verify=False,
+                            stream=False,
+                            proxies=self.proxies
+                            )
+
                         self.nfh.add(url,r.status_code,r.text)
                     except Exception,ex:
                         msg = "Failed probe_missing {host}: {etype}::{msg}".format(host=self.host.geturl(),etype=type(ex),msg=ex)
@@ -165,7 +194,7 @@ class FDB:
                 if self.FAILS >= self.MAX_FAIL:
                     self.die = True
                     break
-                if self.verbosity:
+                if self.verbosity > 0:
                     current_t = timeit.default_timer()
                     t_delta = current_t - start_t
                     if t_delta >= self.INTERVAL_S:
@@ -195,6 +224,7 @@ if __name__== "__main__":
     parser.add_argument("-t","--threads",help="thread count",type=int,default=5)
     parser.add_argument("-l","--wordlist",help="wordlist to run",required=True)
     parser.add_argument("-v","--verbosity",help="verbose level; v,vv",action="count",default=0)
+    parser.add_argument("-p","--proxy",help="Set proxy. ex: http://127.0.0.1:8080")
 
     if len(sys.argv) < 2:
             parser.print_help()
@@ -215,11 +245,20 @@ if __name__== "__main__":
     output.write("#wordlist: {wordlist}\n".format(wordlist=args.wordlist))
     output.write("#extensions: {exts}\n".format(exts=args.extensions))
     output.flush()
-    myfdb = FDB(args.host,args.wordlist,args.extensions,args.threads,args.verbosity)
+    myfdb = FDB(
+        host=args.host,
+        wordlist=args.wordlist,
+        extensions=args.extensions,
+        threads=args.threads,
+        verbosity=args.verbosity,
+        proxy=args.proxy
+        )
     try:
         myfdb.run()
     except KeyboardInterrupt:
         myfdb.die = True
+        myfdb.pool.join()
+        sleep(11) # ana thread time +1
 
     for x in filter(lambda x: x.code != 404,myfdb.results):
         output.write("{code},{url},{length}\n".format(url=x.url,code=x.code,length=x.length))

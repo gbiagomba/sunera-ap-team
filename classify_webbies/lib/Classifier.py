@@ -1,14 +1,18 @@
-import re,os,socket,ssl,httplib
+import re,os,socket,ssl,httplib,requests
+from OpenSSL import crypto
 
 from eventlet import GreenPool,Timeout
 from urlparse import urlparse
 from random import choice
 from Common import *
+from Bing import Bing
 from Webby import Webby
 from DNSHandler import DNSHandler
 
+requests.packages.urllib3.disable_warnings()
+
 class Classifier:
-    def __init__(self,scopeObj,startingWebbies,useragents,threadCount,verbosity,nolookups,resolvers=[]):
+    def __init__(self,scopeObj,startingWebbies,useragents,threadCount,verbosity,nolookups,bing_key,resolvers=[]):
         self.scopeObj = scopeObj
         self.resolvers = resolvers
         self.useragent = choice(useragents)
@@ -22,6 +26,12 @@ class Classifier:
         self.verbosity = verbosity
         self.threadCount = threadCount
         self.nolookups = nolookups
+
+        self.bing_key = bing_key
+        self.bing_vname_history = set()
+        self.bing_ip_history = set()
+
+        self.ALTNAME_EXTENSION = 2
 
     def reinit(self):
         self.webbyPool = GreenPool(size=self.threadCount)
@@ -43,7 +53,7 @@ class Classifier:
                     response = None
                     if webby.ssl == None:
                         try:
-                            conn = httplib.HTTPSConnection(host,webby.port,timeout=3)
+                            conn = httplib.HTTPSConnection(host,webby.port,timeout=3,context=ssl.SSLContext(ssl.PROTOCOL_TLSv1))
                             conn.request("GET",path,headers=headers)
                             webby.ssl = True
                             requestSent = True
@@ -57,7 +67,7 @@ class Classifier:
                         conn.request("GET",path,headers=headers)
                         requestSent = True
                     else:
-                        conn = httplib.HTTPSConnection(host,webby.port,timeout=3)
+                        conn = httplib.HTTPSConnection(host,webby.port,timeout=3,context=ssl.SSLContext(ssl.PROTOCOL_TLSv1))
                         conn.request("GET",path,headers=headers)
                         requestSent = True
                 except socket.error,ex:
@@ -123,6 +133,22 @@ class Classifier:
 
                             self.storage.add(webby)
 
+                        if webby.ssl:
+                            pem_cert = ssl.get_server_certificate((webby.ip,int(webby.port)))
+                            cert = crypto.load_certificate(crypto.FILETYPE_PEM,pem_cert)
+                            for k,v in cert.get_subject().get_components():
+                                if k == "CN":
+                                    if re.search('[A-Za-z]',v):
+                                        newWebby = Webby(ip="",hostname=v,port=webby.port)
+                                        if newWebby not in self.webbyHistory and newWebby not in self.toClassify:
+                                            self.toClassify.add(newWebby)
+                            dns_names = filter(lambda x: x.count('DNS:'),str(cert.get_extension(self.ALTNAME_EXTENSION)).split(','))
+                            dns_names = map(lambda x: str(x).split(':',1)[1],dns_names)
+                            for vname in dns_names:
+                                newWebby = Webby(ip="",hostname=vname,port=webby.port)
+                                if newWebby not in self.webbyHistory and newWebby not in self.toClassify:
+                                    self.toClassify.add(newWebby)
+
                     except Exception,ex:
                         #connection timed out
                         print_error("Timeout Error %s(%s):%s %s" % (webby.ip,webby.hostname,webby.port,ex))
@@ -132,6 +158,7 @@ class Classifier:
 
     def enumerate(self,webby):
         myDNSHandler = DNSHandler()
+
         if len(self.resolvers) > 0:
             myDNSHandler.nameservers = self.resolvers
         if webby.hostname and not webby.ip:
@@ -142,6 +169,7 @@ class Classifier:
                         self.toClassify.add(webby)
                 else:
                     print_warning("excluding webby %s(%s):%s not in scope." % (ip,webby.hostname,webby.port))
+
         elif webby.ip and not webby.hostname:
             if self.scopeObj.inScope(webby.ip):
                 for hostname in myDNSHandler.resolveIP(webby.ip):
@@ -159,6 +187,33 @@ class Classifier:
                     webby.firstrun=False
                     self.toClassify.add(webby)
 
+        if self.bing_key:
+            try:
+                xbing = Bing(self.bing_key)
+                if webby.hostname and webby.hostname not in self.bing_vname_history:
+                    if self.verbosity:
+                        print_info("searching bing for hostname '{vname}'".format(vname=webby.hostname))
+                    xbing.search_domain(webby.hostname)
+                    self.bing_vname_history.add(webby.hostname)
+                if webby.ip and webby.ip not in self.bing_ip_history:
+                    if self.verbosity:
+                        print_info("searching bing for ip '{ip}'".format(ip=webby.ip))
+                    xbing.search_ip(webby.ip)
+                    self.bing_ip_history.add(webby.ip)
+                for host_port_combo in xbing.uniq_hosts:
+                    hostid,port = host_port_combo.split(':')
+                    ip = hostname= ""
+                    if re.search('^[0-9]{1,3}(\.[0-9]{1,3}){3}$',hostid):
+                        ip = hostid
+                        hostname = ""
+                    else:
+                        hostname = hostid
+                        ip = ""
+                    nwebby = Webby(ip=ip,hostname=hostname,port=port)
+                    if nwebby not in self.storage and nwebby not in self.toClassify:
+                        self.toClassify.add(nwebby)
+            except Exception,ex:
+                print_error("Bing search failed:{etype} {msg}".format(etype=type(ex),msg=str(ex)))
 
     def run(self):
         while len(self.toClassify) > 0:
@@ -171,6 +226,6 @@ class Classifier:
                 print_success("launching webby %s(%s):%s" % (webby.ip,webby.hostname,webby.port))
                 self.webbyHistory.add(webby)
                 self.webbyPool.spawn_n(self.fetch,webby)
-
-        self.webbyPool.waitall()
-        self.DNSPool.waitall()
+            if not len(self.toClassify):
+                self.webbyPool.waitall()
+                self.DNSPool.waitall()

@@ -1,3 +1,6 @@
 eventlet
 dnspython
 netaddr
+requests
+gevent
+pyopenssl

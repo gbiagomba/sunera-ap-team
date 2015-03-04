@@ -1,26 +1,67 @@
 from Probe import *
+from urlparse import urlparse
 from difflib import SequenceMatcher
+from hashlib import md5
+import re
 
 class NotFoundHandler:
-    def __init__(self,threshold=0.9):
+    def __init__(self,max_word=20,threshold=0.9):
         self.threshold= threshold
-        self.history = []
-        self.avgl = 0
-    def update_thresholde(self,threshold):
-        self.threshold = threshold
+        self.history = set()
+        self.bhash_history = set()
+        self.shash_history = set()
+        self.avg_length = 0
+        self.MAX_WORD = max_word
+        self.tstruct_re = re.compile('\</?(?P<tag>[a-zA-Z]+ ?)>?')
 
     def add(self,url,code,body):
-        self.history.append(Probe(url,code,body))
+        xprobe = Probe(url,code,body)
+        self.history.add(xprobe)
         l = 0
         for b in [x.body for x in self.history]:
            l += len(b)
 
-        self.avgl = l/len(self.history)
-        if self.avgl < 50:
+        self.avg_length = l/len(self.history)
+        if self.avg_length < 50:
             self.threshold = 1.0
 
+        # body hash with possible mirrored uri
+        self.bhash_history.add(md5(xprobe.body).hexdigest())
+        uri = urlparse(xprobe.url).path
+        # body hash without possible mirrored uri. if dup, set removes
+        self.bhash_history.add(md5(xprobe.body.replace(uri,'')).hexdigest())
+
+        # hash of tag structure for testing if similiar to 404 and needs
+        # more careful/expensive analysis
+        try:
+            t_struct = "".join(self.tstruct_re.findall(xprobe.body))
+            self.shash_history.add(md5(t_struct).hexdigest())
+        except Exception as ex:
+            print_error("404 probe structure hash creation failed due to {etype}:{emsg}".format(etype=type(ex),emsg=ex))
+
+    def in_length_window(self,l):
+        return (l > (self.avg_length - self.MAX_WORD)) and \
+                (l < (self.avg_length + self.MAX_WORD))
+
+    def detected_code(self,code):
+        return code in [n.code for n in self.history]
+
     def is_not_found(self,xprobe):
-        if xprobe.code in [n.code for n in self.history]:
+        x_bhash = md5(xprobe.body).hexdigest()
+        try:
+            x_shash = md5(
+                        "".join(self.tstruct_re.findall(xprobe.body))
+                      ).hexdigest()
+        except Exception as e:
+            print_error("Structure hash creation failed. {url} - {etype}:{e}".format(url=xprobe.url,etype=type(e),e=e))
+            x_shash = ""
+
+        # easy/cheap check if 404
+        if x_bhash in self.bhash_history:
+            return True
+
+        # if similiar structure
+        if (x_shash in self.shash_history or self.in_length_window(xprobe.length)) and self.detected_code(xprobe.code):
             s = SequenceMatcher(isjunk=lambda x: x in " \t",autojunk=False)
             s.set_seq2(xprobe.body)
             for body in [ n.body for n in filter(lambda y: y.code ==xprobe.code,self.history)]:
